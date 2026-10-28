@@ -2,14 +2,12 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { sql } from "@vercel/postgres";
 
 type TgUser = { id: number; first_name?: string; last_name?: string; username?: string };
-type TgMessage = {
-  message_id: number;
-  chat: { id: number; type?: string };
-  from?: TgUser;
-  text?: string;
-};
+type TgChat = { id: number; type?: string };
+type TgMessage = { message_id: number; chat: TgChat; from?: TgUser; text?: string };
 type TgCallback = { id: string; from: TgUser; message?: TgMessage; data?: string };
 type TgUpdate = { update_id: number; message?: TgMessage; callback_query?: TgCallback };
+type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: number } };
+type Session = { step: string; payload: Record<string, string> };
 
 const HOME = [
   [{ text: "🛠 طلب بوت جديد", callback_data: "service:new" }],
@@ -27,7 +25,7 @@ const SERVICES: Record<string, string> = {
   followup: "متابعة طلب سابق"
 };
 
-async function telegram(method: string, body: Record<string, unknown>) {
+async function telegram(method: string, body: Record<string, unknown>): Promise<TgApiResult> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -35,7 +33,7 @@ async function telegram(method: string, body: Record<string, unknown>) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  const result = await response.json() as { ok: boolean; description?: string };
+  const result = await response.json() as TgApiResult;
   if (!response.ok || !result.ok) throw new Error(result.description || `Telegram API ${response.status}`);
   return result;
 }
@@ -43,6 +41,17 @@ async function telegram(method: string, body: Record<string, unknown>) {
 async function send(chatId: number, text: string, keyboard?: unknown) {
   return telegram("sendMessage", {
     chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+    ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+    disable_web_page_preview: true
+  });
+}
+
+async function edit(chatId: number, messageId: number, text: string, keyboard?: unknown) {
+  return telegram("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
     text,
     parse_mode: "HTML",
     ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
@@ -73,9 +82,9 @@ async function ensureSchema() {
   )`;
 }
 
-async function getSession(chatId: number) {
+async function getSession(chatId: number): Promise<Session | undefined> {
   const result = await sql`SELECT step, payload FROM client_sessions WHERE chat_id = ${chatId}`;
-  return result.rows[0] as { step: string; payload: Record<string, string> } | undefined;
+  return result.rows[0] as Session | undefined;
 }
 
 async function setSession(chatId: number, step: string, payload: Record<string, string>) {
@@ -85,23 +94,8 @@ async function setSession(chatId: number, step: string, payload: Record<string, 
       payload = EXCLUDED.payload, updated_at = NOW()`;
 }
 
-async function clearSession(chatId: number) {
-  await sql`DELETE FROM client_sessions WHERE chat_id = ${chatId}`;
-}
-
 function fullName(user?: TgUser) {
   return [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "عميل تيليجرام";
-}
-
-async function start(chatId: number, user?: TgUser) {
-  await clearSession(chatId);
-  await send(chatId,
-    `أهلًا ${escapeHtml(user?.first_name || "بيك")}، نورتني.
-
-أنا مساعد استقبال طلبات تطوير البوتات. اختار نوع الخدمة، وهجمع منك التفاصيل خطوة بخطوة عشان يوصلني طلبك بشكل منظم.
-
-📌 التواصل وإرسال الطلبات هنا عبر تيليجرام فقط.`,
-    HOME);
 }
 
 function escapeHtml(value: string) {
@@ -109,30 +103,115 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"]/g, (ch) => entities[ch] || ch);
 }
 
+/**
+ * Keep one persistent bot message per private chat. Each flow step edits that
+ * message; only send a new one if the previous message cannot be edited.
+ */
+async function showScreen(
+  chatId: number,
+  step: string,
+  payload: Record<string, string>,
+  text: string,
+  keyboard?: unknown,
+  preferredMessageId?: number
+) {
+  let messageId = Number(payload.uiMessageId || preferredMessageId || 0);
+  if (messageId) {
+    try {
+      await edit(chatId, messageId, text, keyboard);
+    } catch (error) {
+      const reason = String(error);
+      // Telegram reports this when the requested text/keyboard already matches.
+      if (!reason.toLowerCase().includes("message is not modified")) {
+        const sent = await send(chatId, text, keyboard);
+        messageId = Number(sent.result?.message_id || 0);
+      }
+    }
+  } else {
+    const sent = await send(chatId, text, keyboard);
+    messageId = Number(sent.result?.message_id || 0);
+  }
+  const nextPayload = { ...payload, ...(messageId ? { uiMessageId: String(messageId) } : {}) };
+  await setSession(chatId, step, nextPayload);
+}
+
+async function start(chatId: number, user?: TgUser, preferredMessageId?: number) {
+  const oldSession = await getSession(chatId);
+  const payload = {
+    username: user?.username || oldSession?.payload.username || "",
+    fullName: fullName(user),
+    ...(oldSession?.payload.uiMessageId ? { uiMessageId: oldSession.payload.uiMessageId } : {})
+  };
+  await showScreen(
+    chatId,
+    "home",
+    payload,
+    `أهلًا ${escapeHtml(user?.first_name || "بيك")}، نورتني.
+
+أنا مساعد استقبال طلبات تطوير البوتات. اختار نوع الخدمة، وهجمع منك التفاصيل خطوة بخطوة عشان يوصلني طلبك بشكل منظم.
+
+📌 التواصل وإرسال الطلبات هنا عبر تيليجرام فقط.`,
+    HOME,
+    preferredMessageId
+  );
+}
+
+async function answerCallback(callback: TgCallback) {
+  await telegram("answerCallbackQuery", { callback_query_id: callback.id }).catch(() => undefined);
+}
+
 async function handleCallback(callback: TgCallback) {
   const chatId = callback.message?.chat.id;
   if (!chatId) return;
-  await telegram("answerCallbackQuery", { callback_query_id: callback.id }).catch(() => undefined);
+  await answerCallback(callback);
   const data = callback.data || "";
-  if (data === "home" || data === "cancel") return start(chatId, callback.from);
+  const existingMessageId = callback.message?.message_id;
+  const current = await getSession(chatId);
+  const currentPayload = {
+    ...(current?.payload || {}),
+    username: callback.from.username || current?.payload.username || "",
+    fullName: fullName(callback.from),
+    ...(existingMessageId ? { uiMessageId: String(existingMessageId) } : {})
+  };
+
+  if (data === "home" || data === "cancel") return start(chatId, callback.from, existingMessageId);
+
   if (data.startsWith("service:")) {
     const serviceKey = data.split(":")[1];
     const service = SERVICES[serviceKey];
-    if (!service) return start(chatId, callback.from);
+    if (!service) return start(chatId, callback.from, existingMessageId);
     if (serviceKey === "followup") {
-      await setSession(chatId, "followup", { service });
-      return send(chatId, "ابعت رقم الطلب لو معاك، أو اكتب اسم المستخدم اللي سجلت بيه الطلب.");
+      return showScreen(chatId, "followup", { ...currentPayload, service }, "ابعت رقم الطلب لو معاك، أو اكتب اسم المستخدم اللي سجلت بيه الطلب.", [
+        [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
+      ], existingMessageId);
     }
-    await setSession(chatId, "details", { service, username: callback.from.username || "", fullName: fullName(callback.from) });
-    return send(chatId,
+    return showScreen(
+      chatId,
+      "details",
+      { ...currentPayload, service },
       `تمام، اخترت: <b>${escapeHtml(service)}</b>
 
 اكتب وصف الفكرة أو المشكلة بالتفصيل. اذكر المميزات اللي محتاجها وأي روابط أو أمثلة مفيدة. لا ترسل كلمات مرور أو مفاتيح سرية.`,
-      [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
+      [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]],
+      existingMessageId
+    );
   }
+
+  if (data === "budget:skip" && current?.step === "budget") {
+    return showScreen(chatId, "timeline", { ...currentPayload, ...current.payload, budget: "مش محدد" },
+      "محتاج المشروع خلال قد إيه؟ اكتب المدة التقريبية أو «مش محدد».",
+      [[{ text: "مش محدد", callback_data: "timeline:skip" }, { text: "إلغاء", callback_data: "cancel" }]],
+      existingMessageId);
+  }
+
+  if (data === "timeline:skip" && current?.step === "timeline") {
+    const payload = { ...currentPayload, ...current.payload, timeline: "مش محدد" };
+    return showScreen(chatId, "confirm", payload, confirmationText(payload), confirmationKeyboard(), existingMessageId);
+  }
+
   if (data === "confirm:yes") {
     const session = await getSession(chatId);
-    if (!session || session.step !== "confirm") return start(chatId, callback.from);
+    if (!session || session.step !== "confirm") return start(chatId, callback.from, existingMessageId);
     const p = session.payload;
     const userId = callback.from.id;
     const saved = await sql`INSERT INTO client_requests
@@ -141,12 +220,13 @@ async function handleCallback(callback: TgCallback) {
       ${p.service}, ${p.details}, ${p.budget || null}, ${p.timeline || null}, ${String(chatId)}, 'new')
       RETURNING id`;
     const requestId = saved.rows[0].id;
-    await clearSession(chatId);
-    await send(chatId, `تم استلام طلبك بنجاح.
+    const doneText = `تم استلام طلبك بنجاح.
 رقم الطلب: <b>#${requestId}</b>
 
-هراجع التفاصيل وأتواصل معاك هنا على تيليجرام. تقدر ترجع للقائمة الرئيسية من الزر التالي.`,
-      [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
+هراجع التفاصيل وأتواصل معاك هنا على تيليجرام. استخدم الزر التالي لو حابب ترجع للقائمة الرئيسية.`;
+    await showScreen(chatId, "done", { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") }, doneText,
+      [[{ text: "القائمة الرئيسية", callback_data: "home" }]], existingMessageId);
+
     const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
     if (adminId) {
       const adminText = `📥 <b>طلب مشروع جديد #${requestId}</b>
@@ -161,12 +241,32 @@ async function handleCallback(callback: TgCallback) {
     }
     return;
   }
+
   if (data === "confirm:edit") {
     const session = await getSession(chatId);
-    if (!session) return start(chatId, callback.from);
-    await setSession(chatId, "details", session.payload);
-    return send(chatId, "اكتب وصف المشروع من جديد:");
+    if (!session) return start(chatId, callback.from, existingMessageId);
+    return showScreen(chatId, "details", session.payload, "اكتب وصف المشروع من جديد:", [
+      [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
+    ], existingMessageId);
   }
+}
+
+function confirmationText(payload: Record<string, string>) {
+  return `راجع طلبك قبل الإرسال:
+
+<b>الخدمة:</b> ${escapeHtml(payload.service || "")}
+<b>التفاصيل:</b> ${escapeHtml(payload.details || "")}
+<b>الميزانية:</b> ${escapeHtml(payload.budget || "لم يحدد")}
+<b>المدة:</b> ${escapeHtml(payload.timeline || "لم يحدد")}
+
+هل تؤكد إرسال الطلب؟`;
+}
+
+function confirmationKeyboard() {
+  return [
+    [{ text: "تأكيد وإرسال", callback_data: "confirm:yes" }, { text: "تعديل التفاصيل", callback_data: "confirm:edit" }],
+    [{ text: "إلغاء", callback_data: "cancel" }]
+  ];
 }
 
 async function handleMessage(message: TgMessage) {
@@ -174,44 +274,48 @@ async function handleMessage(message: TgMessage) {
   const text = (message.text || "").trim();
   const user = message.from;
   if (message.chat.type && message.chat.type !== "private") return;
-  if (text === "/start" || text === "/menu") return start(chatId, user);
-  if (text === "/cancel") return start(chatId, user);
+  if (text === "/start" || text === "/menu" || text === "/cancel") return start(chatId, user);
   if (!text) return;
   const session = await getSession(chatId);
-  if (!session) return send(chatId, "اختار الخدمة الأول من القائمة عشان أقدر أسجل طلبك بشكل صحيح.", HOME);
-  const payload: Record<string, string> = { ...session.payload, username: user?.username || session.payload.username || "", fullName: fullName(user) };
+  if (!session) return start(chatId, user);
+
+  const payload: Record<string, string> = {
+    ...session.payload,
+    username: user?.username || session.payload.username || "",
+    fullName: fullName(user)
+  };
+
   if (session.step === "followup") {
     const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
-    if (adminId) await send(Number(adminId), `🔎 استفسار متابعة من ${escapeHtml(fullName(user))} (${user?.username ? "@" + escapeHtml(user.username) : "بدون يوزر"})
+    if (adminId) {
+      await send(Number(adminId), `🔎 استفسار متابعة من ${escapeHtml(fullName(user))} (${user?.username ? "@" + escapeHtml(user.username) : "بدون يوزر"})
 الرسالة: ${escapeHtml(text)}`).catch(() => undefined);
-    await clearSession(chatId);
-    return send(chatId, "وصل طلب المتابعة. هراجعه وأرد عليك هنا على تيليجرام.", [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
+    }
+    return showScreen(chatId, "done", payload,
+      "وصل طلب المتابعة. هراجعه وأرد عليك هنا على تيليجرام.",
+      [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
   }
+
   if (session.step === "details") {
     payload.details = text;
-    await setSession(chatId, "budget", payload);
-    return send(chatId, "ميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».", [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    return showScreen(chatId, "budget", payload,
+      "ميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».",
+      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
   }
+
   if (session.step === "budget") {
     payload.budget = text;
-    await setSession(chatId, "timeline", payload);
-    return send(chatId, "محتاج المشروع خلال قد إيه؟ اكتب المدة التقريبية أو «مش محدد».", [[{ text: "مش محدد", callback_data: "timeline:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    return showScreen(chatId, "timeline", payload,
+      "محتاج المشروع خلال قد إيه؟ اكتب المدة التقريبية أو «مش محدد».",
+      [[{ text: "مش محدد", callback_data: "timeline:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
   }
+
   if (session.step === "timeline") {
     payload.timeline = text;
-    await setSession(chatId, "confirm", payload);
-    return send(chatId,
-      `راجع طلبك قبل الإرسال:
-
-<b>الخدمة:</b> ${escapeHtml(payload.service)}
-<b>التفاصيل:</b> ${escapeHtml(payload.details || "")}
-<b>الميزانية:</b> ${escapeHtml(payload.budget || "لم يحدد")}
-<b>المدة:</b> ${escapeHtml(payload.timeline)}
-
-هل تؤكد إرسال الطلب؟`,
-      [[{ text: "تأكيد وإرسال", callback_data: "confirm:yes" }, { text: "تعديل التفاصيل", callback_data: "confirm:edit" }], [{ text: "إلغاء", callback_data: "cancel" }]]);
+    return showScreen(chatId, "confirm", payload, confirmationText(payload), confirmationKeyboard());
   }
-  return send(chatId, "كمل الخطوة الحالية، أو اكتب /menu للرجوع للقائمة.");
+
+  return send(chatId, "استخدم الأزرار الموجودة في رسالة البوت، أو اكتب /menu لعرض القائمة.");
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -226,42 +330,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     await ensureSchema();
     const update = req.body as TgUpdate;
-    if (update.callback_query) {
-      const data = update.callback_query.data || "";
-      if (data === "budget:skip" || data === "timeline:skip") {
-        const chatId = update.callback_query.message?.chat.id;
-        if (chatId) {
-          const session = await getSession(chatId);
-          if (session) {
-            const payload: Record<string, string> = { ...session.payload, username: update.callback_query.from.username || session.payload.username || "", fullName: fullName(update.callback_query.from) };
-            if (data === "budget:skip" && session.step === "budget") {
-              payload.budget = "مش محدد";
-              await setSession(chatId, "timeline", payload);
-              await telegram("answerCallbackQuery", { callback_query_id: update.callback_query.id }).catch(() => undefined);
-              await send(chatId, "محتاج المشروع خلال قد إيه؟", [[{ text: "مش محدد", callback_data: "timeline:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
-              return res.status(200).json({ ok: true });
-            }
-            if (data === "timeline:skip" && session.step === "timeline") {
-              payload.timeline = "مش محدد";
-              await setSession(chatId, "confirm", payload);
-              await telegram("answerCallbackQuery", { callback_query_id: update.callback_query.id }).catch(() => undefined);
-              await send(chatId, `راجع طلبك قبل الإرسال:
-
-<b>الخدمة:</b> ${escapeHtml(payload.service)}
-<b>التفاصيل:</b> ${escapeHtml(payload.details || "")}
-<b>الميزانية:</b> ${escapeHtml(payload.budget || "مش محدد")}
-<b>المدة:</b> ${escapeHtml(payload.timeline)}
-
-هل تؤكد إرسال الطلب؟`, [[{ text: "تأكيد وإرسال", callback_data: "confirm:yes" }, { text: "تعديل التفاصيل", callback_data: "confirm:edit" }], [{ text: "إلغاء", callback_data: "cancel" }]]);
-              return res.status(200).json({ ok: true });
-            }
-          }
-        }
-      }
-      await handleCallback(update.callback_query);
-    } else if (update.message) {
-      await handleMessage(update.message);
-    }
+    if (update.callback_query) await handleCallback(update.callback_query);
+    else if (update.message) await handleMessage(update.message);
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error("Telegram webhook error:", error);

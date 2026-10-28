@@ -66,20 +66,6 @@ async function ensureSchema() {
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
-  await sql`CREATE TABLE IF NOT EXISTS project_analyses (
-    id TEXT PRIMARY KEY,
-    chat_id BIGINT NOT NULL,
-    service TEXT NOT NULL,
-    details TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'queued',
-    result TEXT,
-    review JSONB,
-    agent_outputs JSONB,
-    error_message TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  )`;
-  await sql`CREATE INDEX IF NOT EXISTS project_analyses_chat_id_idx ON project_analyses (chat_id, created_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS client_requests (
     id BIGSERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,

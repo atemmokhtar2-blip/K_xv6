@@ -208,49 +208,6 @@ async function handleCallback(callback: TgCallback) {
     return showScreen(chatId, "confirm", payload, confirmationText(payload), confirmationKeyboard(), existingMessageId);
   }
 
-  if (data === "analysis:try") {
-    const session = await getSession(chatId);
-    if (!session || !["details_ready", "analysis_ready"].includes(session.step) || !session.payload.details) {
-      return start(chatId, callback.from, existingMessageId);
-    }
-    const analysisId = randomUUID();
-    const payload: Record<string, string> = { ...session.payload, analysisId, uiMessageId: String(existingMessageId || session.payload.uiMessageId || "") };
-    const aiConfigured = Boolean(process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS || process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
-    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
-      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${payload.details},
-      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "No Gemini or Groq API key is configured"})`;
-    if (!aiConfigured) {
-      return showScreen(chatId, "details_ready", payload,
-        "تعذّر تشغيل التحليل لأن مفاتيح الذكاء الاصطناعي غير مضبوطة حاليًا. وصفك محفوظ؛ جرّب مرة أخرى لاحقًا.",
-        [[{ text: "إعادة المحاولة", callback_data: "analysis:try" }, { text: "إلغاء", callback_data: "cancel" }]],
-        existingMessageId);
-    }
-    await showScreen(chatId, "analyzing", payload,
-      "🧠 <b>جاري تحليل فكرتك الآن</b>\n\nهراجع الهدف والمتطلبات والتصور التقني والمخاطر. هتظهر النتيجة هنا في نفس الرسالة.",
-      undefined,
-      existingMessageId);
-    waitUntil(runProjectAnalysis(analysisId, chatId, payload.details, payload.service || "مش محدد"));
-    return;
-  }
-
-  if (data === "analysis:edit") {
-    const session = await getSession(chatId);
-    if (!session) return start(chatId, callback.from, existingMessageId);
-    return showScreen(chatId, "details", session.payload, "اكتب وصف الفكرة من جديد:", [
-      [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
-    ], existingMessageId);
-  }
-
-  if (data === "analysis:continue") {
-    const session = await getSession(chatId);
-    if (!session || session.step !== "analysis_ready") return start(chatId, callback.from, existingMessageId);
-    const payload = { ...session.payload, username: callback.from.username || session.payload.username || "", fullName: fullName(callback.from) };
-    return showScreen(chatId, "budget", payload,
-      "تمام، لو حابب كمل بيانات الطلب. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».",
-      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]],
-      existingMessageId);
-  }
-
   if (data === "confirm:yes") {
     const session = await getSession(chatId);
     if (!session || session.step !== "confirm") return start(chatId, callback.from, existingMessageId);

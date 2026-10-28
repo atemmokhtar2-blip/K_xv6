@@ -1,8 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { sql } from "@vercel/postgres";
-import { waitUntil } from "@vercel/functions";
-import { randomUUID } from "node:crypto";
-import { runProjectAnalysis } from "../lib/ai/orchestrator";
 
 type TgUser = { id: number; first_name?: string; last_name?: string; username?: string };
 type TgChat = { id: number; type?: string };
@@ -11,7 +8,6 @@ type TgCallback = { id: string; from: TgUser; message?: TgMessage; data?: string
 type TgUpdate = { update_id: number; message?: TgMessage; callback_query?: TgCallback };
 type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: number } };
 type Session = { step: string; payload: Record<string, string> };
-type AnalysisRow = { status: string; result?: string | null; error_message?: string | null };
 
 const HOME = [
   [{ text: "🛠 طلب بوت جديد", callback_data: "service:new" }],

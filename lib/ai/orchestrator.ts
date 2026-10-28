@@ -64,7 +64,17 @@ export async function runProjectAnalysis(
 
     const sessions = await sql`SELECT step, payload FROM client_sessions WHERE chat_id = ${chatId}`;
     const session = sessions.rows[0] as { step?: string; payload?: Record<string, string> } | undefined;
-    if (session?.step === "done" && session.payload?.analysisId === analysisId) {
+    if (session?.payload?.analysisId === analysisId && session.step === "analyzing") {
+      const messageId = Number(session.payload.uiMessageId || 0);
+      if (messageId) {
+        await telegramEdit(chatId, messageId, formatClientReport(report, session.payload), [
+          [{ text: "متابعة بيانات الطلب", callback_data: "analysis:continue" }],
+          [{ text: "إعادة التحليل", callback_data: "analysis:try" }, { text: "القائمة الرئيسية", callback_data: "home" }]
+        ]).catch((error) => console.error("Could not update analysis report screen:", error));
+      }
+      await sql`UPDATE client_sessions SET step = 'analysis_ready', updated_at = NOW()
+        WHERE chat_id = ${chatId} AND payload->>'analysisId' = ${analysisId} AND step = 'analyzing'`;
+    } else if (session?.step === "done" && session.payload?.analysisId === analysisId) {
       const messageId = Number(session.payload.uiMessageId || 0);
       if (messageId) await telegramEdit(chatId, messageId, formatClientReport(report, session.payload)).catch((error) => console.error("Could not update report screen:", error));
       const requestRows = await sql`SELECT id FROM client_requests WHERE chat_id = ${chatId} ORDER BY id DESC LIMIT 1`;
@@ -82,9 +92,9 @@ function escapeHtml(value: string) { return value.replace(/[&<>\"]/g, (ch) => ({
 function formatClientReport(report: string, payload: Record<string, string>) {
   return `🧠 <b>تحليل فكرة مشروعك اكتمل</b>\n\n<b>الخدمة:</b> ${escapeHtml(payload.service || "")}\n<b>الميزانية:</b> ${escapeHtml(payload.budget || "لم يحدد")}\n<b>المدة:</b> ${escapeHtml(payload.timeline || "لم يحدد")}\n\n${escapeHtml(report.slice(0, 2600))}`;
 }
-async function telegramEdit(chatId: number, messageId: number, text: string) {
+async function telegramEdit(chatId: number, messageId: number, text: string, keyboard?: unknown) {
   const token = process.env.TELEGRAM_BOT_TOKEN; if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
-  const response = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", disable_web_page_preview: true }) });
+  const response = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}), disable_web_page_preview: true }) });
   const result = await response.json() as { ok?: boolean; description?: string };
   if (!response.ok || (!result.ok && !result.description?.toLowerCase().includes("message is not modified"))) throw new Error(result.description || "Telegram edit failed");
 }

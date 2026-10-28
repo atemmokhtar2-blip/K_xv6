@@ -295,18 +295,9 @@ async function handleMessage(message: TgMessage) {
 
   if (session.step === "details") {
     payload.details = text;
-    return showScreen(chatId, "details_ready", payload,
-      "وصل وصف فكرتك. اضغط <b>«جرّب التحليل»</b> عشان الذكاء الاصطناعي يحلل الفكرة ويعرض لك النتيجة هنا.",
-      [[{ text: "🧠 جرّب التحليل", callback_data: "analysis:try" }],
-       [{ text: "تعديل الوصف", callback_data: "analysis:edit" }, { text: "إلغاء", callback_data: "cancel" }]]);
-  }
-
-  if (session.step === "details_ready" && text) {
-    payload.details = text;
-    return showScreen(chatId, "details_ready", payload,
-      "تم تحديث وصف الفكرة. اضغط <b>«جرّب التحليل»</b> لعرض تحليل الذكاء الاصطناعي.",
-      [[{ text: "🧠 جرّب التحليل", callback_data: "analysis:try" }],
-       [{ text: "إلغاء", callback_data: "cancel" }]]);
+    return showScreen(chatId, "budget", payload,
+      "وصل وصف فكرتك واتحفظ. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».",
+      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
   }
 
   if (session.step === "budget") {

@@ -17,7 +17,7 @@ const projectDetailsSchema = z.string().trim().min(20, "اكتب تفاصيل أ
     const compact = value.replace(/\\s/g, "");
     return compact.length < 12 || new Set(compact).size > 3;
   }, "الوصف يبدو مكررًا أو غير واضح. اكتب تفاصيل حقيقية عن المطلوب.");
-const requestNumberSchema = z.string().trim().replace(/^#/, "").regex(/^\\d{3,18}$/, "اكتب رقم الطلب كاملًا بالأرقام فقط.");
+const requestNumberSchema = z.string().trim().regex(/^#?\\d{3,18}$/, "اكتب رقم الطلب كاملًا بالأرقام فقط.").transform((value: string) => value.replace(/^#/, ""));
 
 const HOME = [
   [{ text: "🛠 يمكنك طلب البوت من هنا", callback_data: "service:new" }],

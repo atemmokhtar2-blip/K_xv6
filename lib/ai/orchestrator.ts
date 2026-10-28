@@ -1,9 +1,5 @@
 import { sql } from "@vercel/postgres";
-import { understandIdea } from "./agents/understanding";
-import { analyzeRequirements } from "./agents/requirements";
-import { designTechnicalPlan } from "./agents/technical";
-import { reviewAnalysis } from "./agents/reviewer";
-import { createFinalReport } from "./agents/report";
+import { analyzeProjectOnce } from "./agents/fast-analysis";
 
 type JsonObject = Record<string, any>;
 
@@ -20,40 +16,14 @@ export async function runProjectAnalysis(
   service: string
 ): Promise<void> {
   try {
-    const rows = await sql`SELECT agent_outputs FROM project_analyses WHERE id = ${analysisId}`;
-    const saved = (rows.rows[0]?.agent_outputs || {}) as JsonObject;
-    const checkpoints: JsonObject = saved.checkpoints || {};
     await sql`UPDATE project_analyses SET status = 'running', error_message = NULL, updated_at = NOW() WHERE id = ${analysisId}`;
 
-    if (!checkpoints.understanding) {
-      checkpoints.understanding = await understandIdea(details, service);
-      await checkpoint(analysisId, checkpoints);
-    }
-
-    if (!checkpoints.requirements) {
-      checkpoints.requirements = await analyzeRequirements(details, checkpoints.understanding);
-      await checkpoint(analysisId, checkpoints);
-    }
-
-    if (!checkpoints.technical) {
-      checkpoints.technical = await designTechnicalPlan(details, checkpoints.understanding, checkpoints.requirements);
-      await checkpoint(analysisId, checkpoints);
-    }
-
-    if (!checkpoints.review) {
-      checkpoints.review = await reviewAnalysis({ service, details, ...checkpoints }, 1);
-      await checkpoint(analysisId, checkpoints);
-    }
-
-    if (!checkpoints.report) {
-      checkpoints.report = await createFinalReport({ service, details, ...checkpoints }, checkpoints.review);
-      await checkpoint(analysisId, checkpoints);
-    }
-
-    const review = checkpoints.review as JsonObject;
-    const final = checkpoints.report as JsonObject;
-    const report = String(final.report || "").slice(0, 9000);
-    if (!report.trim()) throw new Error("Final report checkpoint is empty");
+    // Keep the request economical: one structured model call for the full analysis.
+    const analysis = await analyzeProjectOnce(details, service);
+    const checkpoints: JsonObject = { unified: analysis.result };
+    const review = analysis.review as JsonObject;
+    const report = analysis.report.slice(0, 9000);
+    if (!report.trim()) throw new Error("Final report is empty");
     const score = Number(review.score || 0);
     const status = review.approved === true || score >= 80 ? "completed" : "completed_with_warnings";
 

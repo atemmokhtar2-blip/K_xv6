@@ -185,10 +185,10 @@ async function handleCallback(callback: TgCallback) {
         WHERE telegram_user_id = ${callback.from.id}
         ORDER BY created_at DESC LIMIT 10`;
       const history = recent.rows.length
-        ? recent.rows.map((row) => `#${row.request_number} — ${escapeHtml(String(row.service))} — ${escapeHtml(String(row.status))} — ${new Date(String(row.created_at)).toLocaleDateString("ar-EG")}`).join("\\n")
+        ? recent.rows.map((row) => `#${row.request_number} — ${escapeHtml(String(row.service))} — ${escapeHtml(String(row.status))} — ${new Date(String(row.created_at)).toLocaleDateString("ar-EG")}`).join("\n")
         : "لا توجد طلبات مسجلة على حساب تيليجرام ده حتى الآن.";
       return showScreen(chatId, "followup", { ...currentPayload, service },
-        `📋 <b>سجل طلباتك</b>\\n\\n${history}\\n\\nاكتب رقم الطلب كاملًا كما ظهر لك لمراجعة تفاصيله. التحقق مرتبط بحساب تيليجرام الذي أنشأ الطلب.`,
+        `📋 <b>سجل طلباتك</b>\n\n${history}\n\nاكتب رقم الطلب كاملًا كما ظهر لك لمراجعة تفاصيله. التحقق مرتبط بحساب تيليجرام الذي أنشأ الطلب.`,
         [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]], existingMessageId);
     }
     return showScreen(
@@ -226,7 +226,6 @@ async function handleCallback(callback: TgCallback) {
       ${p.service}, ${p.details}, ${p.budget || null}, ${p.timeline || null}, ${String(chatId)}, 'new')
       RETURNING id, request_number`;
     const requestId = saved.rows[0].request_number;
-    const internalId = saved.rows[0].id;
     const doneText = `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nهراجع تفاصيل طلبك وأتواصل معاك هنا على تيليجرام.`;
     const donePayload = { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") };
     await showScreen(chatId, "done", donePayload, doneText,
@@ -292,7 +291,7 @@ async function handleMessage(message: TgMessage) {
 
   if (session.step === "followup") {
     const normalized = text.replace(/^#/, "").trim();
-    if (!/^\\d{1,18}$/.test(normalized)) {
+    if (!/^\d{1,18}$/.test(normalized)) {
       return showScreen(chatId, "followup", payload,
         "رقم الطلب غير صالح. اكتب الأرقام فقط كما ظهرت في رسالة تأكيد الطلب، أو اضغط إلغاء.",
         [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
@@ -308,7 +307,7 @@ async function handleMessage(message: TgMessage) {
     }
     const item = found.rows[0];
     return showScreen(chatId, "done", payload,
-      `📋 <b>تفاصيل الطلب #${item.request_number}</b>\\nالحالة: ${escapeHtml(String(item.status))}\\nالخدمة: ${escapeHtml(String(item.service))}\\nالتفاصيل: ${escapeHtml(String(item.project_details))}\\nالميزانية: ${escapeHtml(String(item.budget || "لم تحدد"))}\\nالمدة: ${escapeHtml(String(item.timeline || "لم تحدد"))}\\nتاريخ الطلب: ${new Date(String(item.created_at)).toLocaleDateString("ar-EG")}`,
+      `📋 <b>تفاصيل الطلب #${item.request_number}</b>\nالحالة: ${escapeHtml(String(item.status))}\nالخدمة: ${escapeHtml(String(item.service))}\nالتفاصيل: ${escapeHtml(String(item.project_details))}\nالميزانية: ${escapeHtml(String(item.budget || "لم تحدد"))}\nالمدة: ${escapeHtml(String(item.timeline || "لم تحدد"))}\nتاريخ الطلب: ${new Date(String(item.created_at)).toLocaleDateString("ar-EG")}`,
       [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
   }
 

@@ -1,15 +1,7 @@
 import { sql } from "@vercel/postgres";
-import { understandIdea } from "./agents/understanding";
-import { analyzeRequirements } from "./agents/requirements";
-import { designTechnicalPlan } from "./agents/technical";
-import { reviewAnalysis } from "./agents/reviewer";
-import { createFinalReport } from "./agents/report";
+import { analyzeProjectOnce } from "./agents/fast-analysis";
 
 type AgentOutput = Record<string, unknown>;
-
-function asText(value: unknown): string {
-  return typeof value === "string" ? value : JSON.stringify(value ?? "");
-}
 
 export async function runProjectAnalysis(
   analysisId: string,
@@ -19,37 +11,15 @@ export async function runProjectAnalysis(
 ): Promise<void> {
   try {
     await sql`UPDATE project_analyses SET status = 'running', updated_at = NOW() WHERE id = ${analysisId}`;
-    let understanding: AgentOutput;
-    let requirements: AgentOutput;
-    let technical: AgentOutput;
-    let review: AgentOutput = {};
-    let bundle: Record<string, unknown>;
 
-    [understanding, requirements, technical] = await Promise.all([
-      understandIdea(details, service),
-      // Requirements and technical agents start with a basic interpretation so they can run in parallel.
-      analyzeRequirements(details, { initial_user_text: details, service }),
-      designTechnicalPlan(details, { initial_user_text: details, service }, { initial_user_text: details })
-    ]);
-    bundle = { service, details, understanding, requirements, technical };
-
-    for (let round = 1; round <= 2; round += 1) {
-      review = await reviewAnalysis(bundle, round);
-      const approved = review.approved === true || Number(review.score || 0) >= 85;
-      if (approved) break;
-      if (round === 2) break;
-      const revisionNote = asText(review.revision_instructions || review.issues || "راجع النواقص والتناقضات");
-      [understanding, requirements, technical] = await Promise.all([
-        understandIdea(details, service, revisionNote),
-        analyzeRequirements(details, understanding, revisionNote),
-        designTechnicalPlan(details, understanding, requirements, revisionNote)
-      ]);
-      bundle = { service, details, understanding, requirements, technical };
-    }
-
-    const final = await createFinalReport(bundle, review);
+    // One Groq completion replaces the previous 5-9 completion pipeline.
+    const analysis = await analyzeProjectOnce(details, service);
+    const bundle: AgentOutput = { service, details, ...analysis.result };
+    const final = { report: analysis.report, remainingQuestions: analysis.remainingQuestions };
+    const review = analysis.review;
     const quality = Number(review.score || 0);
     const status = (review.approved === true || quality >= 80) ? "completed" : "completed_with_warnings";
+
     await sql`UPDATE project_analyses
       SET status = ${status}, result = ${final.report}, review = ${JSON.stringify(review)}::jsonb,
           agent_outputs = ${JSON.stringify(bundle)}::jsonb, updated_at = NOW()

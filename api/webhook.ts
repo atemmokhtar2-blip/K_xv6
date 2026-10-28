@@ -233,10 +233,10 @@ async function handleCallback(callback: TgCallback) {
     }
     const analysisId = randomUUID();
     const payload: Record<string, string> = { ...session.payload, analysisId, uiMessageId: String(existingMessageId || session.payload.uiMessageId || "") };
-    const aiConfigured = Boolean(process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
+    const aiConfigured = Boolean(process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS || process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
     await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
       VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${payload.details},
-      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "GROQ_API_KEY(S) is not configured"})`;
+      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "No Gemini or Groq API key is configured"})`;
     if (!aiConfigured) {
       return showScreen(chatId, "details_ready", payload,
         "تعذّر تشغيل التحليل لأن مفاتيح الذكاء الاصطناعي غير مضبوطة حاليًا. وصفك محفوظ؛ جرّب مرة أخرى لاحقًا.",

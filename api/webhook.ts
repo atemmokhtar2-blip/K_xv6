@@ -228,7 +228,7 @@ async function handleCallback(callback: TgCallback) {
 
   if (data === "analysis:try") {
     const session = await getSession(chatId);
-    if (!session || session.step !== "details_ready" || !session.payload.details) {
+    if (!session || !["details_ready", "analysis_ready"].includes(session.step) || !session.payload.details) {
       return start(chatId, callback.from, existingMessageId);
     }
     const analysisId = randomUUID();

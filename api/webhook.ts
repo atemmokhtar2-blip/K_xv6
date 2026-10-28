@@ -1,5 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { sql } from "@vercel/postgres";
+import { waitUntil } from "@vercel/functions";
+import { randomUUID } from "node:crypto";
+import { runProjectAnalysis } from "../lib/ai/orchestrator";
 
 type TgUser = { id: number; first_name?: string; last_name?: string; username?: string };
 type TgChat = { id: number; type?: string };
@@ -8,6 +11,7 @@ type TgCallback = { id: string; from: TgUser; message?: TgMessage; data?: string
 type TgUpdate = { update_id: number; message?: TgMessage; callback_query?: TgCallback };
 type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: number } };
 type Session = { step: string; payload: Record<string, string> };
+type AnalysisRow = { status: string; result?: string | null; error_message?: string | null };
 
 const HOME = [
   [{ text: "🛠 طلب بوت جديد", callback_data: "service:new" }],
@@ -66,6 +70,20 @@ async function ensureSchema() {
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
+  await sql`CREATE TABLE IF NOT EXISTS project_analyses (
+    id TEXT PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    details TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    result TEXT,
+    review JSONB,
+    agent_outputs JSONB,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS project_analyses_chat_id_idx ON project_analyses (chat_id, created_at DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS client_requests (
     id BIGSERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,
@@ -220,15 +238,27 @@ async function handleCallback(callback: TgCallback) {
       ${p.service}, ${p.details}, ${p.budget || null}, ${p.timeline || null}, ${String(chatId)}, 'new')
       RETURNING id`;
     const requestId = saved.rows[0].id;
-    const doneText = `تم استلام طلبك بنجاح.
-رقم الطلب: <b>#${requestId}</b>
-
-هراجع التفاصيل وأتواصل معاك هنا على تيليجرام. استخدم الزر التالي لو حابب ترجع للقائمة الرئيسية.`;
-    await showScreen(chatId, "done", { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") }, doneText,
+    const analysisId = p.analysisId || "";
+    let analysis: AnalysisRow | undefined;
+    if (analysisId) {
+      const analysisResult = await sql`SELECT status, result, error_message FROM project_analyses WHERE id = ${analysisId} AND chat_id = ${chatId}`;
+      analysis = analysisResult.rows[0] as AnalysisRow | undefined;
+    }
+    const report = analysis?.result?.trim();
+    const doneText = report && (analysis?.status === "completed" || analysis?.status === "completed_with_warnings")
+      ? `🧠 <b>تحليل فكرة مشروعك اكتمل</b>\nرقم الطلب: <b>#${requestId}</b>\n\n<b>الخدمة:</b> ${escapeHtml(p.service)}\n<b>الميزانية:</b> ${escapeHtml(p.budget || "لم يحدد")}\n<b>المدة:</b> ${escapeHtml(p.timeline || "لم يحدد")}\n\n${escapeHtml(report.slice(0, 2600))}`
+      : analysis?.status === "failed"
+        ? `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nتعذّر إكمال التحليل الآلي حاليًا، وطلبك محفوظ للمراجعة. هتواصل معاك هنا على تيليجرام.`
+        : `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nتحليل فكرتك شغال حاليًا. هحدّث نفس الرسالة بالتقرير النهائي أول ما يكتمل، من غير ما تحتاج تبعت حاجة تانية.`;
+    const donePayload = { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") };
+    await showScreen(chatId, "done", donePayload, doneText,
       [[{ text: "القائمة الرئيسية", callback_data: "home" }]], existingMessageId);
 
     const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
     if (adminId) {
+      const analysisText = report && (analysis?.status === "completed" || analysis?.status === "completed_with_warnings")
+        ? `\n\n<b>تقرير الذكاء الاصطناعي:</b>\n${escapeHtml(report.slice(0, 2500))}`
+        : `\n\nحالة التحليل: ${escapeHtml(analysis?.status || "لم يتم إنشاء تحليل")}`;
       const adminText = `📥 <b>طلب مشروع جديد #${requestId}</b>
 الخدمة: ${escapeHtml(p.service)}
 الاسم: ${escapeHtml(p.fullName || fullName(callback.from))}
@@ -236,7 +266,7 @@ async function handleCallback(callback: TgCallback) {
 معرّف تيليجرام: <code>${userId}</code>
 التفاصيل: ${escapeHtml(p.details)}
 الميزانية: ${escapeHtml(p.budget || "لم يحدد")}
-المدة: ${escapeHtml(p.timeline || "لم يحدد")}`;
+المدة: ${escapeHtml(p.timeline || "لم يحدد")}${analysisText}`;
       await send(Number(adminId), adminText, [[{ text: "فتح محادثة العميل", url: `tg://user?id=${userId}` }]]).catch(() => undefined);
     }
     return;
@@ -298,8 +328,14 @@ async function handleMessage(message: TgMessage) {
 
   if (session.step === "details") {
     payload.details = text;
+    const analysisId = randomUUID();
+    payload.analysisId = analysisId;
+    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status)
+      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${text}, 'queued')`;
+    // Start specialist agents immediately; keep the Telegram intake screen responsive.
+    waitUntil(runProjectAnalysis(analysisId, chatId, text, payload.service || "مش محدد"));
     return showScreen(chatId, "budget", payload,
-      "ميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».",
+      "وصلت فكرتك وبدأ فريق التحليل الداخلي مراجعتها في الخلفية.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».",
       [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
   }
 

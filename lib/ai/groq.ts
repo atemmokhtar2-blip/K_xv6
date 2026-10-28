@@ -94,7 +94,7 @@ export async function callGroqAgent(
   const failures: string[] = [];
 
   for (const provider of [
-    { name: "Gemini", keys: geminiKeys, model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite", cursorKey: "gemini", call: callGemini },
+    { name: "Gemini", keys: geminiKeys, model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite", cursorKey: "gemini", call: callGemini },
     { name: "Groq", keys: groqKeys, model: process.env.GROQ_MODEL || "openai/gpt-oss-20b", cursorKey: "groq", call: callGroq }
   ]) {
     if (!provider.keys.length) continue;

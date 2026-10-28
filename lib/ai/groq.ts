@@ -31,7 +31,7 @@ export async function callGroqAgent(
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      max_completion_tokens: 1800,
+      max_completion_tokens: 1400,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -42,7 +42,7 @@ ${instructions}`
         { role: "user", content: JSON.stringify(input) }
       ]
     }),
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(9000)
   });
   const body = await response.json() as {
     error?: { message?: string };

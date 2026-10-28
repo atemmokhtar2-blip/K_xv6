@@ -157,8 +157,7 @@ async function start(chatId: number, user?: TgUser, preferredMessageId?: number)
   const oldSession = await getSession(chatId);
   const payload = {
     username: user?.username || oldSession?.payload.username || "",
-    fullName: fullName(user),
-    ...(oldSession?.payload.uiMessageId ? { uiMessageId: oldSession.payload.uiMessageId } : {})
+    fullName: fullName(user)
   };
   await showScreen(
     chatId,
@@ -330,7 +329,7 @@ async function handleMessage(message: TgMessage) {
     payload.details = text;
     const analysisId = randomUUID();
     payload.analysisId = analysisId;
-    const aiConfigured = Boolean(process.env.GROQ_API_KEY);
+    const aiConfigured = Boolean(process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
     await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
       VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${text},
       ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "GROQ_API_KEY is not configured"})`;

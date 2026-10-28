@@ -179,7 +179,7 @@ async function handleMessage(message: TgMessage) {
   if (!text) return;
   const session = await getSession(chatId);
   if (!session) return send(chatId, "اختار الخدمة الأول من القائمة عشان أقدر أسجل طلبك بشكل صحيح.", HOME);
-  const payload = { ...session.payload, username: user?.username || session.payload.username || "", fullName: fullName(user) };
+  const payload: Record<string, string> = { ...session.payload, username: user?.username || session.payload.username || "", fullName: fullName(user) };
   if (session.step === "followup") {
     const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
     if (adminId) await send(Number(adminId), `🔎 استفسار متابعة من ${escapeHtml(fullName(user))} (${user?.username ? "@" + escapeHtml(user.username) : "بدون يوزر"})
@@ -233,7 +233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (chatId) {
           const session = await getSession(chatId);
           if (session) {
-            const payload = { ...session.payload, username: update.callback_query.from.username || session.payload.username || "", fullName: fullName(update.callback_query.from) };
+            const payload: Record<string, string> = { ...session.payload, username: update.callback_query.from.username || session.payload.username || "", fullName: fullName(update.callback_query.from) };
             if (data === "budget:skip" && session.step === "budget") {
               payload.budget = "مش محدد";
               await setSession(chatId, "timeline", payload);

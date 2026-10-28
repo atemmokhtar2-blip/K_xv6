@@ -232,7 +232,7 @@ async function handleCallback(callback: TgCallback) {
       return start(chatId, callback.from, existingMessageId);
     }
     const analysisId = randomUUID();
-    const payload = { ...session.payload, analysisId, uiMessageId: String(existingMessageId || session.payload.uiMessageId || "") };
+    const payload: Record<string, string> = { ...session.payload, analysisId, uiMessageId: String(existingMessageId || session.payload.uiMessageId || "") };
     const aiConfigured = Boolean(process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
     await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
       VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${payload.details},

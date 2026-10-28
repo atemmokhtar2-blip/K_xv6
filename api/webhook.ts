@@ -10,13 +10,7 @@ type TgUpdate = { update_id: number; message?: TgMessage; callback_query?: TgCal
 type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: number } };
 type Session = { step: string; payload: Record<string, string> };
 
-const projectDetailsSchema = z.string().trim().min(20, "اكتب تفاصيل أوضح للفكرة (20 حرفًا على الأقل).")
-  .max(4000, "الوصف طويل جدًا. اختصره إلى 4000 حرف أو أقل.")
-  .refine((value: string) => /[\\p{L}\\p{N}]/u.test(value), "الوصف لازم يحتوي على حروف أو أرقام.")
-  .refine((value: string) => {
-    const compact = value.replace(/\\s/g, "");
-    return compact.length < 12 || new Set(compact).size > 3;
-  }, "الوصف يبدو مكررًا أو غير واضح. اكتب تفاصيل حقيقية عن المطلوب.");
+const projectDetailsSchema = z.string().trim().min(20, "اكتب وصفًا لا يقل عن 20 حرفًا.");
 const requestNumberSchema = z.string().trim().regex(/^#?\\d{3,18}$/, "اكتب رقم الطلب كاملًا بالأرقام فقط.").transform((value: string) => value.replace(/^#/, ""));
 
 const HOME = [
@@ -265,7 +259,8 @@ async function handleCallback(callback: TgCallback) {
   if (data === "confirm:edit") {
     const session = await getSession(chatId);
     if (!session) return start(chatId, callback.from, existingMessageId);
-    return showScreen(chatId, "details", session.payload, "اكتب وصف المشروع من جديد:", [
+    return showScreen(chatId, "details", session.payload, "اكتب وصف المشروع من جديد (20 حرفًا على الأقل)، أو تواصل معنا مباشرةً:", [
+      [{ text: "التواصل مع @K_xv6", url: "https://t.me/K_xv6" }],
       [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
     ], existingMessageId);
   }
@@ -332,7 +327,7 @@ async function handleMessage(message: TgMessage) {
   if (session.step === "details") {
     const validated = projectDetailsSchema.safeParse(text);
     if (!validated.success) {
-      return showScreen(chatId, "details", payload, `وصف الفكرة محتاج تفاصيل أكتر. ${escapeHtml(validated.error.issues[0]?.message || "راجع الوصف وحاول مرة أخرى.")}`, [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
+      return showScreen(chatId, "details", payload, `الوصف لازم يكون 20 حرفًا على الأقل. ${escapeHtml(validated.error.issues[0]?.message || "اكتب وصفًا أطول أو تواصل معنا مباشرةً.")}`, [[{ text: "التواصل مع @K_xv6", url: "https://t.me/K_xv6" }, { text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
     }
     payload.details = validated.data;
     const previousMessageId = Number(payload.uiMessageId || 0);

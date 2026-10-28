@@ -56,6 +56,10 @@ async function edit(chatId: number, messageId: number, text: string, keyboard?: 
   });
 }
 
+async function deleteMessage(chatId: number, messageId: number) {
+  return telegram("deleteMessage", { chat_id: chatId, message_id: messageId });
+}
+
 async function ensureSchema() {
   await sql`CREATE TABLE IF NOT EXISTS client_sessions (
     chat_id BIGINT PRIMARY KEY,
@@ -313,9 +317,18 @@ async function handleMessage(message: TgMessage) {
 
   if (session.step === "details") {
     payload.details = text;
-    return showScreen(chatId, "budget", payload,
+    // Remove the previous bot prompt and send the budget question as a fresh
+    // message so it appears directly below the customer's description.
+    const previousMessageId = Number(payload.uiMessageId || 0);
+    if (previousMessageId) {
+      await deleteMessage(chatId, previousMessageId).catch(() => undefined);
+    }
+    const sent = await send(chatId,
       "وصل وصف فكرتك واتحفظ. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».",
       [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    const nextPayload = { ...payload, ...(sent.result?.message_id ? { uiMessageId: String(sent.result.message_id) } : {}) };
+    await setSession(chatId, "budget", nextPayload);
+    return;
   }
 
   if (session.step === "budget") {

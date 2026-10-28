@@ -12,8 +12,8 @@ type Session = { step: string; payload: Record<string, string> };
 
 const projectDetailsSchema = z.string().trim().min(20, "اكتب تفاصيل أوضح للفكرة (20 حرفًا على الأقل).")
   .max(4000, "الوصف طويل جدًا. اختصره إلى 4000 حرف أو أقل.")
-  .refine((value) => /[\\p{L}\\p{N}]/u.test(value), "الوصف لازم يحتوي على حروف أو أرقام.")
-  .refine((value) => {
+  .refine((value: string) => /[\\p{L}\\p{N}]/u.test(value), "الوصف لازم يحتوي على حروف أو أرقام.")
+  .refine((value: string) => {
     const compact = value.replace(/\\s/g, "");
     return compact.length < 12 || new Set(compact).size > 3;
   }, "الوصف يبدو مكررًا أو غير واضح. اكتب تفاصيل حقيقية عن المطلوب.");

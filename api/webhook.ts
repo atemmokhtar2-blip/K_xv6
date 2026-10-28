@@ -10,10 +10,7 @@ type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: 
 type Session = { step: string; payload: Record<string, string> };
 
 const HOME = [
-  [{ text: "🛠 طلب بوت جديد", callback_data: "service:new" }],
-  [{ text: "⚙️ تطوير بوت موجود", callback_data: "service:upgrade" }],
-  [{ text: "🧰 إصلاح أخطاء", callback_data: "service:fix" }],
-  [{ text: "💡 استشارة أو فكرة مشروع", callback_data: "service:consult" }],
+  [{ text: "🛠 يمكنك طلب البوت من هنا", callback_data: "service:new" }],
   [{ text: "📋 متابعة طلب سابق", callback_data: "service:followup" }]
 ];
 
@@ -66,8 +63,10 @@ async function ensureSchema() {
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
+  await sql`CREATE SEQUENCE IF NOT EXISTS client_request_number_seq START WITH 100 INCREMENT BY 1`;
   await sql`CREATE TABLE IF NOT EXISTS client_requests (
     id BIGSERIAL PRIMARY KEY,
+    request_number BIGINT UNIQUE DEFAULT nextval('client_request_number_seq'),
     chat_id BIGINT NOT NULL,
     telegram_user_id BIGINT NOT NULL,
     username TEXT,
@@ -80,6 +79,10 @@ async function ensureSchema() {
     status TEXT NOT NULL DEFAULT 'new',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
+  await sql`ALTER TABLE client_requests ADD COLUMN IF NOT EXISTS request_number BIGINT`;
+  await sql`ALTER TABLE client_requests ALTER COLUMN request_number SET DEFAULT nextval('client_request_number_seq')`;
+  await sql`UPDATE client_requests SET request_number = nextval('client_request_number_seq') WHERE request_number IS NULL`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS client_requests_request_number_uidx ON client_requests(request_number)`;
 }
 
 async function getSession(chatId: number): Promise<Session | undefined> {
@@ -147,8 +150,6 @@ async function start(chatId: number, user?: TgUser, preferredMessageId?: number)
     payload,
     `أهلًا ${escapeHtml(user?.first_name || "بيك")}، نورتني.
 
-أنا مساعد استقبال طلبات تطوير البوتات. اختار نوع الخدمة، وهجمع منك التفاصيل خطوة بخطوة عشان يوصلني طلبك بشكل منظم.
-
 📌 التواصل وإرسال الطلبات هنا عبر تيليجرام فقط.`,
     HOME,
     preferredMessageId
@@ -180,9 +181,15 @@ async function handleCallback(callback: TgCallback) {
     const service = SERVICES[serviceKey];
     if (!service) return start(chatId, callback.from, existingMessageId);
     if (serviceKey === "followup") {
-      return showScreen(chatId, "followup", { ...currentPayload, service }, "ابعت رقم الطلب لو معاك، أو اكتب اسم المستخدم اللي سجلت بيه الطلب.", [
-        [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
-      ], existingMessageId);
+      const recent = await sql`SELECT request_number, service, status, created_at FROM client_requests
+        WHERE telegram_user_id = ${callback.from.id}
+        ORDER BY created_at DESC LIMIT 10`;
+      const history = recent.rows.length
+        ? recent.rows.map((row) => `#${row.request_number} — ${escapeHtml(String(row.service))} — ${escapeHtml(String(row.status))} — ${new Date(String(row.created_at)).toLocaleDateString("ar-EG")}`).join("\\n")
+        : "لا توجد طلبات مسجلة على حساب تيليجرام ده حتى الآن.";
+      return showScreen(chatId, "followup", { ...currentPayload, service },
+        `📋 <b>سجل طلباتك</b>\\n\\n${history}\\n\\nاكتب رقم الطلب كاملًا كما ظهر لك لمراجعة تفاصيله. التحقق مرتبط بحساب تيليجرام الذي أنشأ الطلب.`,
+        [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]], existingMessageId);
     }
     return showScreen(
       chatId,
@@ -217,8 +224,9 @@ async function handleCallback(callback: TgCallback) {
       (chat_id, telegram_user_id, username, full_name, service, project_details, budget, timeline, contact, status)
       VALUES (${chatId}, ${userId}, ${p.username || null}, ${p.fullName || fullName(callback.from)},
       ${p.service}, ${p.details}, ${p.budget || null}, ${p.timeline || null}, ${String(chatId)}, 'new')
-      RETURNING id`;
-    const requestId = saved.rows[0].id;
+      RETURNING id, request_number`;
+    const requestId = saved.rows[0].request_number;
+    const internalId = saved.rows[0].id;
     const doneText = `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nهراجع تفاصيل طلبك وأتواصل معاك هنا على تيليجرام.`;
     const donePayload = { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") };
     await showScreen(chatId, "done", donePayload, doneText,
@@ -283,13 +291,24 @@ async function handleMessage(message: TgMessage) {
   };
 
   if (session.step === "followup") {
-    const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
-    if (adminId) {
-      await send(Number(adminId), `🔎 استفسار متابعة من ${escapeHtml(fullName(user))} (${user?.username ? "@" + escapeHtml(user.username) : "بدون يوزر"})
-الرسالة: ${escapeHtml(text)}`).catch(() => undefined);
+    const normalized = text.replace(/^#/, "").trim();
+    if (!/^\\d{1,18}$/.test(normalized)) {
+      return showScreen(chatId, "followup", payload,
+        "رقم الطلب غير صالح. اكتب الأرقام فقط كما ظهرت في رسالة تأكيد الطلب، أو اضغط إلغاء.",
+        [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
     }
+    const found = await sql`SELECT request_number, service, project_details, budget, timeline, status, created_at
+      FROM client_requests
+      WHERE request_number = ${normalized} AND telegram_user_id = ${user?.id || 0} AND chat_id = ${chatId}
+      LIMIT 1`;
+    if (!found.rows.length) {
+      return showScreen(chatId, "followup", payload,
+        "لم يتم العثور على طلب بهذا الرقم مرتبط بحساب تيليجرام الحالي. راجع الرقم أو افتح سجل طلباتك من القائمة.",
+        [[{ text: "إعادة عرض طلباتي", callback_data: "service:followup" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    }
+    const item = found.rows[0];
     return showScreen(chatId, "done", payload,
-      "وصل طلب المتابعة. هراجعه وأرد عليك هنا على تيليجرام.",
+      `📋 <b>تفاصيل الطلب #${item.request_number}</b>\\nالحالة: ${escapeHtml(String(item.status))}\\nالخدمة: ${escapeHtml(String(item.service))}\\nالتفاصيل: ${escapeHtml(String(item.project_details))}\\nالميزانية: ${escapeHtml(String(item.budget || "لم تحدد"))}\\nالمدة: ${escapeHtml(String(item.timeline || "لم تحدد"))}\\nتاريخ الطلب: ${new Date(String(item.created_at)).toLocaleDateString("ar-EG")}`,
       [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
   }
 

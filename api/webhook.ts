@@ -105,7 +105,8 @@ async function start(chatId: number, user?: TgUser) {
 }
 
 function escapeHtml(value: string) {
-  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+  const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+  return value.replace(/[&<>"]/g, (ch) => entities[ch] || ch);
 }
 
 async function handleCallback(callback: TgCallback) {

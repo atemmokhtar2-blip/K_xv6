@@ -219,27 +219,13 @@ async function handleCallback(callback: TgCallback) {
       ${p.service}, ${p.details}, ${p.budget || null}, ${p.timeline || null}, ${String(chatId)}, 'new')
       RETURNING id`;
     const requestId = saved.rows[0].id;
-    const analysisId = p.analysisId || "";
-    let analysis: AnalysisRow | undefined;
-    if (analysisId) {
-      const analysisResult = await sql`SELECT status, result, error_message FROM project_analyses WHERE id = ${analysisId} AND chat_id = ${chatId}`;
-      analysis = analysisResult.rows[0] as AnalysisRow | undefined;
-    }
-    const report = analysis?.result?.trim();
-    const doneText = report && (analysis?.status === "completed" || analysis?.status === "completed_with_warnings")
-      ? `🧠 <b>تحليل فكرة مشروعك اكتمل</b>\nرقم الطلب: <b>#${requestId}</b>\n\n<b>الخدمة:</b> ${escapeHtml(p.service)}\n<b>الميزانية:</b> ${escapeHtml(p.budget || "لم يحدد")}\n<b>المدة:</b> ${escapeHtml(p.timeline || "لم يحدد")}\n\n${escapeHtml(report.slice(0, 2600))}`
-      : analysis?.status === "failed"
-        ? `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nتعذّر إكمال التحليل الآلي حاليًا، وطلبك محفوظ للمراجعة. هتواصل معاك هنا على تيليجرام.`
-        : `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nتحليل فكرتك شغال حاليًا. هحدّث نفس الرسالة بالتقرير النهائي أول ما يكتمل، من غير ما تحتاج تبعت حاجة تانية.`;
+    const doneText = `تم استلام طلبك بنجاح. رقم الطلب: <b>#${requestId}</b>\n\nهراجع تفاصيل طلبك وأتواصل معاك هنا على تيليجرام.`;
     const donePayload = { ...p, uiMessageId: String(existingMessageId || p.uiMessageId || "") };
     await showScreen(chatId, "done", donePayload, doneText,
       [[{ text: "القائمة الرئيسية", callback_data: "home" }]], existingMessageId);
 
     const adminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
     if (adminId) {
-      const analysisText = report && (analysis?.status === "completed" || analysis?.status === "completed_with_warnings")
-        ? `\n\n<b>تقرير الذكاء الاصطناعي:</b>\n${escapeHtml(report.slice(0, 2500))}`
-        : `\n\nحالة التحليل: ${escapeHtml(analysis?.status || "لم يتم إنشاء تحليل")}`;
       const adminText = `📥 <b>طلب مشروع جديد #${requestId}</b>
 الخدمة: ${escapeHtml(p.service)}
 الاسم: ${escapeHtml(p.fullName || fullName(callback.from))}
@@ -247,7 +233,7 @@ async function handleCallback(callback: TgCallback) {
 معرّف تيليجرام: <code>${userId}</code>
 التفاصيل: ${escapeHtml(p.details)}
 الميزانية: ${escapeHtml(p.budget || "لم يحدد")}
-المدة: ${escapeHtml(p.timeline || "لم يحدد")}${analysisText}`;
+المدة: ${escapeHtml(p.timeline || "لم يحدد")}`;
       await send(Number(adminId), adminText, [[{ text: "فتح محادثة العميل", url: `tg://user?id=${userId}` }]]).catch(() => undefined);
     }
     return;

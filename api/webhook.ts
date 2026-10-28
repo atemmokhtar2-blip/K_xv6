@@ -330,12 +330,18 @@ async function handleMessage(message: TgMessage) {
     payload.details = text;
     const analysisId = randomUUID();
     payload.analysisId = analysisId;
-    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status)
-      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${text}, 'queued')`;
-    // Start specialist agents immediately; keep the Telegram intake screen responsive.
-    waitUntil(runProjectAnalysis(analysisId, chatId, text, payload.service || "مش محدد"));
-    return showScreen(chatId, "budget", payload,
-      "وصلت فكرتك وبدأ فريق التحليل الداخلي مراجعتها في الخلفية.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».",
+    const aiConfigured = Boolean(process.env.GROQ_API_KEY);
+    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
+      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${text},
+      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "GROQ_API_KEY is not configured"})`;
+    if (aiConfigured) {
+      // Start specialist agents immediately; keep the Telegram intake screen responsive.
+      waitUntil(runProjectAnalysis(analysisId, chatId, text, payload.service || "مش محدد"));
+    }
+    const nextPrompt = aiConfigured
+      ? "وصلت فكرتك وبدأ فريق التحليل الداخلي مراجعتها في الخلفية.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد»."
+      : "وصلت فكرتك واتحفظت. تحليل الذكاء الاصطناعي لم يُفعّل بعد من الإدارة، لكن تقدر تكمل بيانات طلبك عادي.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».";
+    return showScreen(chatId, "budget", payload, nextPrompt,
       [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
   }
 

@@ -1,0 +1,17 @@
+{
+  "name": "xelvor-client-intake-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram-only customer intake bot for a bot developer",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vercel/postgres": "^0.10.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.3.0",
+    "typescript": "^5.8.3"
+  }
+}

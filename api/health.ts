@@ -9,9 +9,7 @@ export default function handler(_req: VercelRequest, res: VercelResponse) {
       telegramToken: Boolean(process.env.TELEGRAM_BOT_TOKEN),
       adminChatId: Boolean(process.env.TELEGRAM_ADMIN_CHAT_ID),
       database: Boolean(process.env.POSTGRES_URL),
-      webhookSecret: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
-      groqApiKey: Boolean(process.env.GROQ_API_KEY),
-      groqModel: process.env.GROQ_MODEL || "openai/gpt-oss-20b"
+      webhookSecret: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET)
     }
   });
 }

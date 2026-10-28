@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { sql } from "@vercel/postgres";
 
@@ -8,6 +9,15 @@ type TgCallback = { id: string; from: TgUser; message?: TgMessage; data?: string
 type TgUpdate = { update_id: number; message?: TgMessage; callback_query?: TgCallback };
 type TgApiResult = { ok: boolean; description?: string; result?: { message_id?: number } };
 type Session = { step: string; payload: Record<string, string> };
+
+const projectDetailsSchema = z.string().trim().min(20, "اكتب تفاصيل أوضح للفكرة (20 حرفًا على الأقل).")
+  .max(4000, "الوصف طويل جدًا. اختصره إلى 4000 حرف أو أقل.")
+  .refine((value) => /[\\p{L}\\p{N}]/u.test(value), "الوصف لازم يحتوي على حروف أو أرقام.")
+  .refine((value) => {
+    const compact = value.replace(/\\s/g, "");
+    return compact.length < 12 || new Set(compact).size > 3;
+  }, "الوصف يبدو مكررًا أو غير واضح. اكتب تفاصيل حقيقية عن المطلوب.");
+const requestNumberSchema = z.string().trim().replace(/^#/, "").regex(/^\\d{3,18}$/, "اكتب رقم الطلب كاملًا بالأرقام فقط.");
 
 const HOME = [
   [{ text: "🛠 يمكنك طلب البوت من هنا", callback_data: "service:new" }],
@@ -87,6 +97,8 @@ async function ensureSchema() {
   await sql`ALTER TABLE client_requests ALTER COLUMN request_number SET DEFAULT nextval('client_request_number_seq')`;
   await sql`UPDATE client_requests SET request_number = nextval('client_request_number_seq') WHERE request_number IS NULL`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS client_requests_request_number_uidx ON client_requests(request_number)`;
+  await sql`CREATE TABLE IF NOT EXISTS client_followup_attempts (id BIGSERIAL PRIMARY KEY, chat_id BIGINT NOT NULL, telegram_user_id BIGINT NOT NULL, attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+  await sql`CREATE INDEX IF NOT EXISTS client_followup_attempts_lookup_idx ON client_followup_attempts(chat_id, attempted_at DESC)`;
 }
 
 async function getSession(chatId: number): Promise<Session | undefined> {
@@ -166,7 +178,7 @@ async function answerCallback(callback: TgCallback) {
 
 async function handleCallback(callback: TgCallback) {
   const chatId = callback.message?.chat.id;
-  if (!chatId) return;
+  if (!chatId || callback.message?.chat.type !== "private" || callback.from.id !== chatId) return;
   await answerCallback(callback);
   const data = callback.data || "";
   const existingMessageId = callback.message?.message_id;
@@ -281,7 +293,7 @@ async function handleMessage(message: TgMessage) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
   const user = message.from;
-  if (message.chat.type && message.chat.type !== "private") return;
+  if (message.chat.type !== "private" || !user?.id || user.id !== chatId) return;
   if (text === "/start" || text === "/menu" || text === "/cancel") return start(chatId, user);
   if (!text) return;
   const session = await getSession(chatId);
@@ -294,38 +306,38 @@ async function handleMessage(message: TgMessage) {
   };
 
   if (session.step === "followup") {
-    const normalized = text.replace(/^#/, "").trim();
-    if (!/^\d{1,18}$/.test(normalized)) {
-      return showScreen(chatId, "followup", payload,
-        "رقم الطلب غير صالح. اكتب الأرقام فقط كما ظهرت في رسالة تأكيد الطلب، أو اضغط إلغاء.",
-        [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
+    if (!user?.id || message.chat.type !== "private" || chatId !== user.id) {
+      return showScreen(chatId, "followup", payload, "تعذر التحقق من هوية حساب تيليجرام. افتح البوت في محادثة خاصة وحاول مرة أخرى.", [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
     }
-    const found = await sql`SELECT request_number, service, project_details, budget, timeline, status, created_at
-      FROM client_requests
-      WHERE request_number = ${normalized} AND telegram_user_id = ${user?.id || 0} AND chat_id = ${chatId}
-      LIMIT 1`;
+    const recentAttempts = await sql`SELECT COUNT(*)::int AS count FROM client_followup_attempts WHERE chat_id = ${chatId} AND attempted_at > NOW() - INTERVAL '15 minutes'`;
+    if (Number(recentAttempts.rows[0]?.count || 0) >= 5) {
+      return showScreen(chatId, "followup", payload, "وصلت للحد المؤقت لمحاولات التحقق. انتظر 15 دقيقة ثم حاول مرة أخرى.", [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
+    }
+    const parsedNumber = requestNumberSchema.safeParse(text);
+    if (!parsedNumber.success) {
+      await sql`INSERT INTO client_followup_attempts (chat_id, telegram_user_id) VALUES (${chatId}, ${user.id})`;
+      return showScreen(chatId, "followup", payload, "رقم الطلب غير صالح. اكتب الرقم كاملًا كما ظهر لك (3 أرقام على الأقل).", [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
+    }
+    const found = await sql`SELECT request_number, service, project_details, budget, timeline, status, created_at FROM client_requests WHERE request_number = ${parsedNumber.data} AND telegram_user_id = ${user.id} AND chat_id = ${chatId} LIMIT 1`;
     if (!found.rows.length) {
-      return showScreen(chatId, "followup", payload,
-        "لم يتم العثور على طلب بهذا الرقم مرتبط بحساب تيليجرام الحالي. راجع الرقم أو افتح سجل طلباتك من القائمة.",
-        [[{ text: "إعادة عرض طلباتي", callback_data: "service:followup" }, { text: "إلغاء", callback_data: "cancel" }]]);
+      await sql`INSERT INTO client_followup_attempts (chat_id, telegram_user_id) VALUES (${chatId}, ${user.id})`;
+      return showScreen(chatId, "followup", payload, "لم يتم العثور على طلب بهذا الرقم مرتبط بحساب تيليجرام الحالي. لا يمكن الوصول إلى طلبات حساب آخر.", [[{ text: "إعادة عرض طلباتي", callback_data: "service:followup" }, { text: "إلغاء", callback_data: "cancel" }]]);
     }
     const item = found.rows[0];
     return showScreen(chatId, "done", payload,
-      `📋 <b>تفاصيل الطلب #${item.request_number}</b>\nالحالة: ${escapeHtml(String(item.status))}\nالخدمة: ${escapeHtml(String(item.service))}\nالتفاصيل: ${escapeHtml(String(item.project_details))}\nالميزانية: ${escapeHtml(String(item.budget || "لم تحدد"))}\nالمدة: ${escapeHtml(String(item.timeline || "لم تحدد"))}\nتاريخ الطلب: ${new Date(String(item.created_at)).toLocaleDateString("ar-EG")}`,
+      `📋 <b>تفاصيل الطلب #${item.request_number}</b>\\nالحالة: ${escapeHtml(String(item.status))}\\nالخدمة: ${escapeHtml(String(item.service))}\\nالتفاصيل: ${escapeHtml(String(item.project_details))}\\nالميزانية: ${escapeHtml(String(item.budget || "لم تحدد"))}\\nالمدة: ${escapeHtml(String(item.timeline || "لم تحدد"))}\\nتاريخ الطلب: ${new Date(String(item.created_at)).toLocaleDateString("ar-EG")}`,
       [[{ text: "القائمة الرئيسية", callback_data: "home" }]]);
   }
 
   if (session.step === "details") {
-    payload.details = text;
-    // Remove the previous bot prompt and send the budget question as a fresh
-    // message so it appears directly below the customer's description.
-    const previousMessageId = Number(payload.uiMessageId || 0);
-    if (previousMessageId) {
-      await deleteMessage(chatId, previousMessageId).catch(() => undefined);
+    const validated = projectDetailsSchema.safeParse(text);
+    if (!validated.success) {
+      return showScreen(chatId, "details", payload, `وصف الفكرة محتاج تفاصيل أكتر. ${escapeHtml(validated.error.issues[0]?.message || "راجع الوصف وحاول مرة أخرى.")}`, [[{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]]);
     }
-    const sent = await send(chatId,
-      "وصل وصف فكرتك واتحفظ. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».",
-      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    payload.details = validated.data;
+    const previousMessageId = Number(payload.uiMessageId || 0);
+    if (previousMessageId) await deleteMessage(chatId, previousMessageId).catch(() => undefined);
+    const sent = await send(chatId, "وصل وصف فكرتك واتحفظ. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».", [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
     const nextPayload = { ...payload, ...(sent.result?.message_id ? { uiMessageId: String(sent.result.message_id) } : {}) };
     await setSession(chatId, "budget", nextPayload);
     return;

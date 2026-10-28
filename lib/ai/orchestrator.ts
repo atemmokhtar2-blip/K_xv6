@@ -85,6 +85,19 @@ export async function runProjectAnalysis(
   } catch (error) {
     console.error("Project analysis failed:", error);
     await sql`UPDATE project_analyses SET status = 'failed', error_message = ${String(error).slice(0, 1000)}, updated_at = NOW() WHERE id = ${analysisId}`.catch(() => undefined);
+    const sessions = await sql`SELECT step, payload FROM client_sessions WHERE chat_id = ${chatId}`.catch(() => ({ rows: [] as Array<{ step?: string; payload?: Record<string, string> }> }));
+    const session = sessions.rows[0] as { step?: string; payload?: Record<string, string> } | undefined;
+    if (session?.step === "analyzing" && session.payload?.analysisId === analysisId) {
+      const messageId = Number(session.payload.uiMessageId || 0);
+      if (messageId) {
+        await telegramEdit(chatId, messageId,
+          "تعذّر إكمال التحليل هذه المرة. وصف فكرتك ما زال محفوظًا؛ اضغط إعادة المحاولة، أو ارجع للقائمة.",
+          [[{ text: "إعادة المحاولة", callback_data: "analysis:try" }, { text: "القائمة الرئيسية", callback_data: "home" }]]
+        ).catch((editError) => console.error("Could not show analysis failure:", editError));
+      }
+      await sql`UPDATE client_sessions SET step = 'details_ready', updated_at = NOW()
+        WHERE chat_id = ${chatId} AND payload->>'analysisId' = ${analysisId} AND step = 'analyzing'`.catch(() => undefined);
+    }
   }
 }
 

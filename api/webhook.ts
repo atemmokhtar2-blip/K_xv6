@@ -226,6 +226,49 @@ async function handleCallback(callback: TgCallback) {
     return showScreen(chatId, "confirm", payload, confirmationText(payload), confirmationKeyboard(), existingMessageId);
   }
 
+  if (data === "analysis:try") {
+    const session = await getSession(chatId);
+    if (!session || session.step !== "details_ready" || !session.payload.details) {
+      return start(chatId, callback.from, existingMessageId);
+    }
+    const analysisId = randomUUID();
+    const payload = { ...session.payload, analysisId, uiMessageId: String(existingMessageId || session.payload.uiMessageId || "") };
+    const aiConfigured = Boolean(process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
+    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
+      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${payload.details},
+      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "GROQ_API_KEY(S) is not configured"})`;
+    if (!aiConfigured) {
+      return showScreen(chatId, "details_ready", payload,
+        "تعذّر تشغيل التحليل لأن مفاتيح الذكاء الاصطناعي غير مضبوطة حاليًا. وصفك محفوظ؛ جرّب مرة أخرى لاحقًا.",
+        [[{ text: "إعادة المحاولة", callback_data: "analysis:try" }, { text: "إلغاء", callback_data: "cancel" }]],
+        existingMessageId);
+    }
+    await showScreen(chatId, "analyzing", payload,
+      "🧠 <b>جاري تحليل فكرتك الآن</b>\n\nهراجع الهدف والمتطلبات والتصور التقني والمخاطر. هتظهر النتيجة هنا في نفس الرسالة.",
+      undefined,
+      existingMessageId);
+    waitUntil(runProjectAnalysis(analysisId, chatId, payload.details, payload.service || "مش محدد"));
+    return;
+  }
+
+  if (data === "analysis:edit") {
+    const session = await getSession(chatId);
+    if (!session) return start(chatId, callback.from, existingMessageId);
+    return showScreen(chatId, "details", session.payload, "اكتب وصف الفكرة من جديد:", [
+      [{ text: "إلغاء والعودة للقائمة", callback_data: "cancel" }]
+    ], existingMessageId);
+  }
+
+  if (data === "analysis:continue") {
+    const session = await getSession(chatId);
+    if (!session || session.step !== "analysis_ready") return start(chatId, callback.from, existingMessageId);
+    const payload = { ...session.payload, username: callback.from.username || session.payload.username || "", fullName: fullName(callback.from) };
+    return showScreen(chatId, "budget", payload,
+      "تمام، لو حابب كمل بيانات الطلب. ميزانيتك التقريبية للمشروع إيه؟ اكتب رقم أو نطاق، أو «مش محدد».",
+      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]],
+      existingMessageId);
+  }
+
   if (data === "confirm:yes") {
     const session = await getSession(chatId);
     if (!session || session.step !== "confirm") return start(chatId, callback.from, existingMessageId);
@@ -327,21 +370,18 @@ async function handleMessage(message: TgMessage) {
 
   if (session.step === "details") {
     payload.details = text;
-    const analysisId = randomUUID();
-    payload.analysisId = analysisId;
-    const aiConfigured = Boolean(process.env.GROQ_API_KEY || process.env.GROQ_API_KEYS);
-    await sql`INSERT INTO project_analyses (id, chat_id, service, details, status, error_message)
-      VALUES (${analysisId}, ${chatId}, ${payload.service || "مش محدد"}, ${text},
-      ${aiConfigured ? "queued" : "failed"}, ${aiConfigured ? null : "GROQ_API_KEY is not configured"})`;
-    if (aiConfigured) {
-      // Start specialist agents immediately; keep the Telegram intake screen responsive.
-      waitUntil(runProjectAnalysis(analysisId, chatId, text, payload.service || "مش محدد"));
-    }
-    const nextPrompt = aiConfigured
-      ? "وصلت فكرتك وبدأ فريق التحليل الداخلي مراجعتها في الخلفية.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد»."
-      : "وصلت فكرتك واتحفظت. تحليل الذكاء الاصطناعي لم يُفعّل بعد من الإدارة، لكن تقدر تكمل بيانات طلبك عادي.\n\nميزانيتك التقريبية للمشروع إيه؟ تقدر تكتب رقم أو نطاق، أو اكتب «مش محدد».";
-    return showScreen(chatId, "budget", payload, nextPrompt,
-      [[{ text: "مش محدد", callback_data: "budget:skip" }, { text: "إلغاء", callback_data: "cancel" }]]);
+    return showScreen(chatId, "details_ready", payload,
+      "وصل وصف فكرتك. اضغط <b>«جرّب التحليل»</b> عشان الذكاء الاصطناعي يحلل الفكرة ويعرض لك النتيجة هنا.",
+      [[{ text: "🧠 جرّب التحليل", callback_data: "analysis:try" }],
+       [{ text: "تعديل الوصف", callback_data: "analysis:edit" }, { text: "إلغاء", callback_data: "cancel" }]]);
+  }
+
+  if (session.step === "details_ready" && text) {
+    payload.details = text;
+    return showScreen(chatId, "details_ready", payload,
+      "تم تحديث وصف الفكرة. اضغط <b>«جرّب التحليل»</b> لعرض تحليل الذكاء الاصطناعي.",
+      [[{ text: "🧠 جرّب التحليل", callback_data: "analysis:try" }],
+       [{ text: "إلغاء", callback_data: "cancel" }]]);
   }
 
   if (session.step === "budget") {
